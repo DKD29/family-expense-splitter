@@ -164,68 +164,6 @@ def calculate_net_balances(expenses):
 
 def calculate_settlement(net_balances):
     """
-    Convert net balances into simplified payment instructions.
-
-    Positive balance = creditor (is owed money).
-    Negative balance = debtor (owes money).
-
-    Returns a list of dictionaries with:
-        from_user
-        to_user
-        amount
-    """
-
-    debtors = []
-    creditors = []
-
-    for user in USERS:
-        balance = to_decimal(net_balances[user])
-
-        if balance < 0:
-            debtors.append({
-                "user": user,
-                "amount": -balance,
-            })
-
-        elif balance > 0:
-            creditors.append({
-                "user": user,
-                "amount": balance,
-            })
-
-    settlements = []
-
-    debtor_index = 0
-    creditor_index = 0
-
-    while debtor_index < len(debtors) and creditor_index < len(creditors):
-        debtor = debtors[debtor_index]
-        creditor = creditors[creditor_index]
-
-        payment = min(
-            debtor["amount"],
-            creditor["amount"],
-        )
-
-        settlements.append({
-            "from_user": debtor["user"],
-            "to_user": creditor["user"],
-            "amount": payment,
-        })
-
-        debtor["amount"] -= payment
-        creditor["amount"] -= payment
-
-        if debtor["amount"] == 0:
-            debtor_index += 1
-
-        if creditor["amount"] == 0:
-            creditor_index += 1
-
-    return settlements
-
-def calculate_settlement(net_balances):
-    """
     Convert net balances into a simplified set of payment instructions.
 
     Positive balance = user is owed money.
