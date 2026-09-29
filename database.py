@@ -298,11 +298,11 @@ def update_expense(
     expense_data = {
         "date": date.isoformat(),
         "description": description,
-        "amount": amount,
+        "amount": str(amount),
         "paid_by": paid_by,
-        "krishna_ratio": krishna_ratio,
-        "karthik_ratio": karthik_ratio,
-        "krishnamurty_ratio": krishnamurty_ratio,
+        "krishna_ratio": str(krishna_ratio),
+        "karthik_ratio": str(karthik_ratio),
+        "krishnamurty_ratio": str(krishnamurty_ratio),
     }
 
     try:
