@@ -1,5 +1,5 @@
 import hashlib
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import streamlit as st
@@ -125,9 +125,68 @@ def user_index(user):
     return 0
 
 
+def created_at_timestamp(record):
+    """Return a sortable timestamp for a database record."""
+    created_at = record.get("created_at")
+
+    if not created_at:
+        return 0.0
+
+    try:
+        if isinstance(created_at, datetime):
+            parsed_datetime = created_at
+        else:
+            parsed_datetime = datetime.fromisoformat(
+                str(created_at).replace("Z", "+00:00")
+            )
+
+        if parsed_datetime.tzinfo is None:
+            parsed_datetime = parsed_datetime.replace(
+                tzinfo=timezone.utc
+            )
+
+        return parsed_datetime.timestamp()
+
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def combined_history_records(expenses, money_transfers):
+    """
+    Return Expenses and Money Transfers in one newest-first order.
+
+    The selected record date is the primary sort order. created_at
+    breaks ties for records entered on the same date.
+    """
+    records = [
+        ("Expense", expense)
+        for expense in expenses
+    ]
+    records.extend(
+        ("Money Transfer", transfer)
+        for transfer in money_transfers
+    )
+
+    return sorted(
+        records,
+        key=lambda item: (
+            as_date(item[1]["date"]).toordinal(),
+            created_at_timestamp(item[1]),
+            str(item[1].get("id", "")),
+        ),
+        reverse=True,
+    )
+
+
 # ============================================================
 # SESSION STATE
 # ============================================================
+
+def initialize_money_transfer_description():
+    """Set the default Money Transfer description when opening the form."""
+    if not st.session_state.get("money_transfer_description"):
+        st.session_state.money_transfer_description = "money transfer"
+
 
 def initialize_state():
     """
@@ -147,13 +206,13 @@ def initialize_state():
         "description": "",
         "amount": 0.0,
         "paid_by": "Krishna",
-        "krishna_ratio": 1.0,
-        "karthik_ratio": 1.0,
-        "krishnamurty_ratio": 1.0,
+        "krishna_ratio": 1,
+        "karthik_ratio": 1,
+        "krishnamurty_ratio": 1,
 
         # Add Money Transfer form
         "money_transfer_date": date.today(),
-        "money_transfer_description": "",
+        "money_transfer_description": "money transfer",
         "money_transfer_amount": 0.0,
         "money_transfer_from_user": "Krishna",
         "money_transfer_to_user": "Krishnamurty",
@@ -180,6 +239,15 @@ def initialize_state():
             st.session_state[key] = value
 
 
+def handle_record_type_change():
+    """
+    Reset the Money Transfer description whenever the user
+    switches the Add selector to Money Transfer.
+    """
+    if st.session_state.add_record_type == "Money Transfer":
+        st.session_state.money_transfer_description = "money transfer"
+
+
 def apply_pending_resets():
     """
     Apply resets before widgets are created.
@@ -191,14 +259,14 @@ def apply_pending_resets():
         st.session_state.description = ""
         st.session_state.amount = 0.0
         st.session_state.paid_by = "Krishna"
-        st.session_state.krishna_ratio = 1.0
-        st.session_state.karthik_ratio = 1.0
-        st.session_state.krishnamurty_ratio = 1.0
+        st.session_state.krishna_ratio = 1
+        st.session_state.karthik_ratio = 1
+        st.session_state.krishnamurty_ratio = 1
         st.session_state.reset_expense_form = False
 
     if st.session_state.reset_money_transfer_form:
         st.session_state.money_transfer_date = date.today()
-        st.session_state.money_transfer_description = ""
+        st.session_state.money_transfer_description = "money transfer"
         st.session_state.money_transfer_amount = 0.0
         st.session_state.money_transfer_from_user = "Krishna"
         st.session_state.money_transfer_to_user = "Krishnamurty"
@@ -207,9 +275,9 @@ def apply_pending_resets():
 
 def reset_ratios():
     """Reset only the Add Expense ratios to 1:1:1."""
-    st.session_state.krishna_ratio = 1.0
-    st.session_state.karthik_ratio = 1.0
-    st.session_state.krishnamurty_ratio = 1.0
+    st.session_state.krishna_ratio = 1
+    st.session_state.karthik_ratio = 1
+    st.session_state.krishnamurty_ratio = 1
 
 
 # ============================================================
@@ -328,6 +396,221 @@ def validate_transfer_form(
 # HISTORY RENDERING
 # ============================================================
 
+def render_expense_record(expense, show_type=False):
+    """Render one editable Expense history card."""
+    expense_id = expense["id"]
+    expense_date = as_date(expense["date"])
+    description = expense["description"]
+    amount = as_decimal(expense["amount"])
+    paid_by = expense["paid_by"]
+    krishna_ratio = as_decimal(expense["krishna_ratio"])
+    karthik_ratio = as_decimal(expense["karthik_ratio"])
+    krishnamurty_ratio = as_decimal(
+        expense["krishnamurty_ratio"]
+    )
+
+    with st.container(border=True):
+        if show_type:
+            st.caption("Type: Expense")
+
+        if st.session_state.editing_expense_id == expense_id:
+            st.write("**Edit Expense**")
+
+            with st.form(f"edit_expense_form_{expense_id}"):
+                edit_date = st.date_input(
+                    "Date",
+                    value=expense_date,
+                    max_value=date.today(),
+                    key=f"edit_date_{expense_id}",
+                )
+
+                edit_description = st.text_input(
+                    "Description",
+                    value=description,
+                    key=f"edit_description_{expense_id}",
+                )
+
+                edit_amount = st.number_input(
+                    "Amount in rupees (₹)",
+                    min_value=0.0,
+                    step=1.0,
+                    format="%.2f",
+                    value=float(amount),
+                    key=f"edit_amount_{expense_id}",
+                )
+
+                edit_paid_by = st.selectbox(
+                    "Paid by",
+                    USERS,
+                    index=user_index(paid_by),
+                    key=f"edit_paid_by_{expense_id}",
+                )
+
+                st.write("Split ratio")
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    edit_krishna_ratio = st.number_input(
+                        "Krishna",
+                        min_value=0,
+                        step=1,
+                        format="%d",
+                        value=int(krishna_ratio),
+                        key=f"edit_krishna_ratio_{expense_id}",
+                    )
+
+                with col2:
+                    edit_karthik_ratio = st.number_input(
+                        "Karthik",
+                        min_value=0,
+                        step=1,
+                        format="%d",
+                        value=int(karthik_ratio),
+                        key=f"edit_karthik_ratio_{expense_id}",
+                    )
+
+                with col3:
+                    edit_krishnamurty_ratio = st.number_input(
+                        "Krishnamurty",
+                        min_value=0,
+                        step=1,
+                        format="%d",
+                        value=int(krishnamurty_ratio),
+                        key=(
+                            f"edit_krishnamurty_ratio_"
+                            f"{expense_id}"
+                        ),
+                    )
+
+                save_expense = st.form_submit_button(
+                    "Save Changes",
+                    type="primary",
+                )
+                cancel_expense = st.form_submit_button("Cancel")
+
+            if cancel_expense:
+                st.session_state.editing_expense_id = None
+                st.rerun()
+
+            if save_expense:
+                error = validate_expense_form(
+                    edit_date,
+                    edit_description,
+                    edit_amount,
+                    edit_krishna_ratio,
+                    edit_karthik_ratio,
+                    edit_krishnamurty_ratio,
+                )
+
+                if error:
+                    st.error(error)
+
+                else:
+                    try:
+                        update_expense(
+                            expense_id=expense_id,
+                            date=edit_date,
+                            description=edit_description,
+                            amount=as_decimal(edit_amount),
+                            paid_by=edit_paid_by,
+                            krishna_ratio=as_decimal(
+                                edit_krishna_ratio
+                            ),
+                            karthik_ratio=as_decimal(
+                                edit_karthik_ratio
+                            ),
+                            krishnamurty_ratio=as_decimal(
+                                edit_krishnamurty_ratio
+                            ),
+                        )
+
+                        st.session_state.expenses = get_expenses()
+
+                    except ValueError as exc:
+                        st.error(str(exc))
+
+                    except DatabaseError as exc:
+                        st.error(str(exc))
+
+                    else:
+                        st.session_state.editing_expense_id = None
+                        st.success("Expense updated.")
+                        st.rerun()
+
+        elif st.session_state.deleting_expense_id == expense_id:
+            st.warning(
+                "Delete this expense permanently? "
+                "This cannot be undone."
+            )
+
+            confirm_col, cancel_col = st.columns(2)
+
+            with confirm_col:
+                confirm_delete = st.button(
+                    "Confirm Delete",
+                    key=f"confirm_delete_expense_{expense_id}",
+                    type="primary",
+                )
+
+            with cancel_col:
+                cancel_delete = st.button(
+                    "Cancel",
+                    key=f"cancel_delete_expense_{expense_id}",
+                )
+
+            if cancel_delete:
+                st.session_state.deleting_expense_id = None
+                st.rerun()
+
+            if confirm_delete:
+                try:
+                    delete_expense(expense_id)
+                    st.session_state.expenses = get_expenses()
+
+                except DatabaseError as exc:
+                    st.error(str(exc))
+
+                else:
+                    st.session_state.deleting_expense_id = None
+                    st.success("Expense deleted.")
+                    st.rerun()
+
+        else:
+            st.write(f"**{description}**")
+            st.caption(
+                f"{expense_date.strftime('%d %b %Y')} · "
+                f"{paid_by} paid"
+            )
+            st.write(f"₹{amount:,.2f}")
+            st.caption(
+                "Split ratio — "
+                f"Krishna: {krishna_ratio}, "
+                f"Krishnamurty: {krishnamurty_ratio}, "
+                f"Karthik: {karthik_ratio}"
+            )
+
+            edit_col, delete_col = st.columns(2)
+
+            with edit_col:
+                if st.button(
+                    "Edit",
+                    key=f"edit_expense_{expense_id}",
+                ):
+                    st.session_state.editing_expense_id = expense_id
+                    st.session_state.deleting_expense_id = None
+                    st.rerun()
+
+            with delete_col:
+                if st.button(
+                    "Delete",
+                    key=f"delete_expense_{expense_id}",
+                ):
+                    st.session_state.deleting_expense_id = expense_id
+                    st.session_state.editing_expense_id = None
+                    st.rerun()
+
+
 def render_expense_history(expenses):
     """Render editable Expense history cards."""
     if not expenses:
@@ -335,214 +618,192 @@ def render_expense_history(expenses):
         return
 
     for expense in expenses:
-        expense_id = expense["id"]
-        expense_date = as_date(expense["date"])
-        description = expense["description"]
-        amount = as_decimal(expense["amount"])
-        paid_by = expense["paid_by"]
-        krishna_ratio = as_decimal(expense["krishna_ratio"])
-        karthik_ratio = as_decimal(expense["karthik_ratio"])
-        krishnamurty_ratio = as_decimal(
-            expense["krishnamurty_ratio"]
-        )
+        render_expense_record(expense)
 
-        with st.container(border=True):
-            if st.session_state.editing_expense_id == expense_id:
-                st.write("**Edit Expense**")
 
-                with st.form(f"edit_expense_form_{expense_id}"):
-                    edit_date = st.date_input(
-                        "Date",
-                        value=expense_date,
-                        max_value=date.today(),
-                        key=f"edit_date_{expense_id}",
-                    )
+def render_money_transfer_record(transfer, show_type=False):
+    """Render one editable Money Transfer history card."""
+    transfer_id = transfer["id"]
+    transfer_date = as_date(transfer["date"])
+    description = transfer["description"]
+    amount = as_decimal(transfer["amount"])
+    from_user = transfer["from_user"]
+    to_user = transfer["to_user"]
 
-                    edit_description = st.text_input(
-                        "Description",
-                        value=description,
-                        key=f"edit_description_{expense_id}",
-                    )
+    with st.container(border=True):
+        if show_type:
+            st.caption("Type: Money Transfer")
 
-                    edit_amount = st.number_input(
-                        "Amount (₹)",
-                        min_value=0.0,
-                        step=1.0,
-                        format="%.2f",
-                        value=float(amount),
-                        key=f"edit_amount_{expense_id}",
-                    )
+        if (
+            st.session_state.editing_money_transfer_id
+            == transfer_id
+        ):
+            st.write("**Edit Money Transfer**")
 
-                    edit_paid_by = st.selectbox(
-                        "Paid by",
-                        USERS,
-                        index=user_index(paid_by),
-                        key=f"edit_paid_by_{expense_id}",
-                    )
-
-                    st.write("Split ratio")
-
-                    col1, col2, col3 = st.columns(3)
-
-                    with col1:
-                        edit_krishna_ratio = st.number_input(
-                            "Krishna",
-                            min_value=0.0,
-                            step=0.10,
-                            format="%.2f",
-                            value=float(krishna_ratio),
-                            key=f"edit_krishna_ratio_{expense_id}",
-                        )
-
-                    with col2:
-                        edit_karthik_ratio = st.number_input(
-                            "Karthik",
-                            min_value=0.0,
-                            step=0.10,
-                            format="%.2f",
-                            value=float(karthik_ratio),
-                            key=f"edit_karthik_ratio_{expense_id}",
-                        )
-
-                    with col3:
-                        edit_krishnamurty_ratio = st.number_input(
-                            "Krishnamurty",
-                            min_value=0.0,
-                            step=0.10,
-                            format="%.2f",
-                            value=float(krishnamurty_ratio),
-                            key=(
-                                f"edit_krishnamurty_ratio_"
-                                f"{expense_id}"
-                            ),
-                        )
-
-                    save_expense = st.form_submit_button(
-                        "Save Changes",
-                        type="primary",
-                    )
-                    cancel_expense = st.form_submit_button("Cancel")
-
-                if cancel_expense:
-                    st.session_state.editing_expense_id = None
-                    st.rerun()
-
-                if save_expense:
-                    error = validate_expense_form(
-                        edit_date,
-                        edit_description,
-                        edit_amount,
-                        edit_krishna_ratio,
-                        edit_karthik_ratio,
-                        edit_krishnamurty_ratio,
-                    )
-
-                    if error:
-                        st.error(error)
-
-                    else:
-                        try:
-                            update_expense(
-                                expense_id=expense_id,
-                                date=edit_date,
-                                description=edit_description,
-                                amount=as_decimal(edit_amount),
-                                paid_by=edit_paid_by,
-                                krishna_ratio=as_decimal(
-                                    edit_krishna_ratio
-                                ),
-                                karthik_ratio=as_decimal(
-                                    edit_karthik_ratio
-                                ),
-                                krishnamurty_ratio=as_decimal(
-                                    edit_krishnamurty_ratio
-                                ),
-                            )
-
-                            st.session_state.expenses = get_expenses()
-
-                        except ValueError as exc:
-                            st.error(str(exc))
-
-                        except DatabaseError as exc:
-                            st.error(str(exc))
-
-                        else:
-                            st.session_state.editing_expense_id = None
-                            st.success("Expense updated.")
-                            st.rerun()
-
-            elif st.session_state.deleting_expense_id == expense_id:
-                st.warning(
-                    "Delete this expense permanently? "
-                    "This cannot be undone."
+            with st.form(
+                f"edit_money_transfer_form_{transfer_id}"
+            ):
+                edit_date = st.date_input(
+                    "Date",
+                    value=transfer_date,
+                    max_value=date.today(),
+                    key=f"edit_transfer_date_{transfer_id}",
                 )
 
-                confirm_col, cancel_col = st.columns(2)
+                edit_description = st.text_input(
+                    "Description",
+                    value=description,
+                    key=f"edit_transfer_description_{transfer_id}",
+                )
 
-                with confirm_col:
-                    confirm_delete = st.button(
-                        "Confirm Delete",
-                        key=f"confirm_delete_expense_{expense_id}",
-                        type="primary",
-                    )
+                edit_amount = st.number_input(
+                    "Amount in rupees (₹)",
+                    min_value=0.0,
+                    step=1.0,
+                    format="%.2f",
+                    value=float(amount),
+                    key=f"edit_transfer_amount_{transfer_id}",
+                )
 
-                with cancel_col:
-                    cancel_delete = st.button(
-                        "Cancel",
-                        key=f"cancel_delete_expense_{expense_id}",
-                    )
+                edit_from_user = st.selectbox(
+                    "From",
+                    USERS,
+                    index=user_index(from_user),
+                    key=f"edit_transfer_from_{transfer_id}",
+                )
 
-                if cancel_delete:
-                    st.session_state.deleting_expense_id = None
-                    st.rerun()
+                edit_to_user = st.selectbox(
+                    "To",
+                    USERS,
+                    index=user_index(to_user),
+                    key=f"edit_transfer_to_{transfer_id}",
+                )
 
-                if confirm_delete:
+                save_transfer = st.form_submit_button(
+                    "Save Changes",
+                    type="primary",
+                )
+                cancel_transfer = st.form_submit_button("Cancel")
+
+            if cancel_transfer:
+                st.session_state.editing_money_transfer_id = None
+                st.rerun()
+
+            if save_transfer:
+                error = validate_transfer_form(
+                    edit_date,
+                    edit_description,
+                    edit_amount,
+                    edit_from_user,
+                    edit_to_user,
+                )
+
+                if error:
+                    st.error(error)
+
+                else:
                     try:
-                        delete_expense(expense_id)
-                        st.session_state.expenses = get_expenses()
+                        update_money_transfer(
+                            transfer_id=transfer_id,
+                            date=edit_date,
+                            description=edit_description,
+                            amount=money(edit_amount),
+                            from_user=edit_from_user,
+                            to_user=edit_to_user,
+                        )
+
+                        st.session_state.money_transfers = (
+                            get_money_transfers()
+                        )
+
+                    except ValueError as exc:
+                        st.error(str(exc))
 
                     except DatabaseError as exc:
                         st.error(str(exc))
 
                     else:
-                        st.session_state.deleting_expense_id = None
-                        st.success("Expense deleted.")
+                        st.session_state.editing_money_transfer_id = None
+                        st.success("Money Transfer updated.")
                         st.rerun()
 
-            else:
-                st.write(f"**{description}**")
-                st.caption(
-                    f"{expense_date.strftime('%d %b %Y')} · "
-                    f"{paid_by} paid"
+        elif (
+            st.session_state.deleting_money_transfer_id
+            == transfer_id
+        ):
+            st.warning(
+                "Delete this Money Transfer permanently? "
+                "This cannot be undone."
+            )
+
+            confirm_col, cancel_col = st.columns(2)
+
+            with confirm_col:
+                confirm_delete = st.button(
+                    "Confirm Delete",
+                    key=f"confirm_delete_transfer_{transfer_id}",
+                    type="primary",
                 )
-                st.write(f"₹{amount:,.2f}")
-                st.caption(
-                    "Split ratio — "
-                    f"Krishna: {krishna_ratio}, "
-                    f"Krishnamurty: {krishnamurty_ratio}, "
-                    f"Karthik: {karthik_ratio}"
+
+            with cancel_col:
+                cancel_delete = st.button(
+                    "Cancel",
+                    key=f"cancel_delete_transfer_{transfer_id}",
                 )
 
-                edit_col, delete_col = st.columns(2)
+            if cancel_delete:
+                st.session_state.deleting_money_transfer_id = None
+                st.rerun()
 
-                with edit_col:
-                    if st.button(
-                        "Edit",
-                        key=f"edit_expense_{expense_id}",
-                    ):
-                        st.session_state.editing_expense_id = expense_id
-                        st.session_state.deleting_expense_id = None
-                        st.rerun()
+            if confirm_delete:
+                try:
+                    delete_money_transfer(transfer_id)
 
-                with delete_col:
-                    if st.button(
-                        "Delete",
-                        key=f"delete_expense_{expense_id}",
-                    ):
-                        st.session_state.deleting_expense_id = expense_id
-                        st.session_state.editing_expense_id = None
-                        st.rerun()
+                    st.session_state.money_transfers = (
+                        get_money_transfers()
+                    )
+
+                except DatabaseError as exc:
+                    st.error(str(exc))
+
+                else:
+                    st.session_state.deleting_money_transfer_id = None
+                    st.success("Money Transfer deleted.")
+                    st.rerun()
+
+        else:
+            st.write(f"**{description}**")
+            st.caption(
+                f"{transfer_date.strftime('%d %b %Y')} · "
+                f"{from_user} → {to_user}"
+            )
+            st.write(f"₹{amount:,.2f}")
+
+            edit_col, delete_col = st.columns(2)
+
+            with edit_col:
+                if st.button(
+                    "Edit",
+                    key=f"edit_transfer_{transfer_id}",
+                ):
+                    st.session_state.editing_money_transfer_id = (
+                        transfer_id
+                    )
+                    st.session_state.deleting_money_transfer_id = (
+                        None
+                    )
+                    st.rerun()
+
+            with delete_col:
+                if st.button(
+                    "Delete",
+                    key=f"delete_transfer_{transfer_id}",
+                ):
+                    st.session_state.deleting_money_transfer_id = (
+                        transfer_id
+                    )
+                    st.session_state.editing_money_transfer_id = None
+                    st.rerun()
 
 
 def render_money_transfer_history(money_transfers):
@@ -552,184 +813,22 @@ def render_money_transfer_history(money_transfers):
         return
 
     for transfer in money_transfers:
-        transfer_id = transfer["id"]
-        transfer_date = as_date(transfer["date"])
-        description = transfer["description"]
-        amount = as_decimal(transfer["amount"])
-        from_user = transfer["from_user"]
-        to_user = transfer["to_user"]
+        render_money_transfer_record(transfer)
 
-        with st.container(border=True):
-            if (
-                st.session_state.editing_money_transfer_id
-                == transfer_id
-            ):
-                st.write("**Edit Money Transfer**")
 
-                with st.form(
-                    f"edit_money_transfer_form_{transfer_id}"
-                ):
-                    edit_date = st.date_input(
-                        "Date",
-                        value=transfer_date,
-                        max_value=date.today(),
-                        key=f"edit_transfer_date_{transfer_id}",
-                    )
+def render_combined_history(expenses, money_transfers):
+    """Render one editable chronological history for both record types."""
+    records = combined_history_records(expenses, money_transfers)
 
-                    edit_description = st.text_input(
-                        "Description",
-                        value=description,
-                        key=f"edit_transfer_description_{transfer_id}",
-                    )
+    if not records:
+        st.write("No expenses or money transfers yet.")
+        return
 
-                    edit_amount = st.number_input(
-                        "Amount (₹)",
-                        min_value=0.0,
-                        step=1.0,
-                        format="%.2f",
-                        value=float(amount),
-                        key=f"edit_transfer_amount_{transfer_id}",
-                    )
-
-                    edit_from_user = st.selectbox(
-                        "From",
-                        USERS,
-                        index=user_index(from_user),
-                        key=f"edit_transfer_from_{transfer_id}",
-                    )
-
-                    edit_to_user = st.selectbox(
-                        "To",
-                        USERS,
-                        index=user_index(to_user),
-                        key=f"edit_transfer_to_{transfer_id}",
-                    )
-
-                    save_transfer = st.form_submit_button(
-                        "Save Changes",
-                        type="primary",
-                    )
-                    cancel_transfer = st.form_submit_button("Cancel")
-
-                if cancel_transfer:
-                    st.session_state.editing_money_transfer_id = None
-                    st.rerun()
-
-                if save_transfer:
-                    error = validate_transfer_form(
-                        edit_date,
-                        edit_description,
-                        edit_amount,
-                        edit_from_user,
-                        edit_to_user,
-                    )
-
-                    if error:
-                        st.error(error)
-
-                    else:
-                        try:
-                            update_money_transfer(
-                                transfer_id=transfer_id,
-                                date=edit_date,
-                                description=edit_description,
-                                amount=money(edit_amount),
-                                from_user=edit_from_user,
-                                to_user=edit_to_user,
-                            )
-
-                            st.session_state.money_transfers = (
-                                get_money_transfers()
-                            )
-
-                        except ValueError as exc:
-                            st.error(str(exc))
-
-                        except DatabaseError as exc:
-                            st.error(str(exc))
-
-                        else:
-                            st.session_state.editing_money_transfer_id = None
-                            st.success("Money Transfer updated.")
-                            st.rerun()
-
-            elif (
-                st.session_state.deleting_money_transfer_id
-                == transfer_id
-            ):
-                st.warning(
-                    "Delete this Money Transfer permanently? "
-                    "This cannot be undone."
-                )
-
-                confirm_col, cancel_col = st.columns(2)
-
-                with confirm_col:
-                    confirm_delete = st.button(
-                        "Confirm Delete",
-                        key=f"confirm_delete_transfer_{transfer_id}",
-                        type="primary",
-                    )
-
-                with cancel_col:
-                    cancel_delete = st.button(
-                        "Cancel",
-                        key=f"cancel_delete_transfer_{transfer_id}",
-                    )
-
-                if cancel_delete:
-                    st.session_state.deleting_money_transfer_id = None
-                    st.rerun()
-
-                if confirm_delete:
-                    try:
-                        delete_money_transfer(transfer_id)
-
-                        st.session_state.money_transfers = (
-                            get_money_transfers()
-                        )
-
-                    except DatabaseError as exc:
-                        st.error(str(exc))
-
-                    else:
-                        st.session_state.deleting_money_transfer_id = None
-                        st.success("Money Transfer deleted.")
-                        st.rerun()
-
-            else:
-                st.write(f"**{description}**")
-                st.caption(
-                    f"{transfer_date.strftime('%d %b %Y')} · "
-                    f"{from_user} → {to_user}"
-                )
-                st.write(f"₹{amount:,.2f}")
-
-                edit_col, delete_col = st.columns(2)
-
-                with edit_col:
-                    if st.button(
-                        "Edit",
-                        key=f"edit_transfer_{transfer_id}",
-                    ):
-                        st.session_state.editing_money_transfer_id = (
-                            transfer_id
-                        )
-                        st.session_state.deleting_money_transfer_id = (
-                            None
-                        )
-                        st.rerun()
-
-                with delete_col:
-                    if st.button(
-                        "Delete",
-                        key=f"delete_transfer_{transfer_id}",
-                    ):
-                        st.session_state.deleting_money_transfer_id = (
-                            transfer_id
-                        )
-                        st.session_state.editing_money_transfer_id = None
-                        st.rerun()
+    for record_type, record in records:
+        if record_type == "Expense":
+            render_expense_record(record, show_type=True)
+        else:
+            render_money_transfer_record(record, show_type=True)
 
 
 # ============================================================
@@ -788,12 +887,13 @@ else:
 # ============================================================
 
 st.divider()
-st.subheader("Add")
+st.subheader("Add records")
 
 record_type = st.selectbox(
     "What do you want to add?",
     ["Expense", "Money Transfer"],
     key="add_record_type",
+    on_change=handle_record_type_change,
 )
 
 if record_type == "Expense":
@@ -810,7 +910,7 @@ if record_type == "Expense":
         )
 
         amount = st.number_input(
-            "Amount (₹)",
+            "Amount in rupees (₹)",
             min_value=0.0,
             step=1.0,
             format="%.2f",
@@ -830,27 +930,27 @@ if record_type == "Expense":
         with col1:
             krishna_ratio = st.number_input(
                 "Krishna",
-                min_value=0.0,
-                step=0.10,
-                format="%.2f",
+                min_value=0,
+                step=1,
+                format="%d",
                 key="krishna_ratio",
             )
 
         with col2:
             krishnamurty_ratio = st.number_input(
                 "Krishnamurty",
-                min_value=0.0,
-                step=0.10,
-                format="%.2f",
+                min_value=0,
+                step=1,
+                format="%d",
                 key="krishnamurty_ratio",
             )
 
         with col3:
             karthik_ratio = st.number_input(
                 "Karthik",
-                min_value=0.0,
-                step=0.10,
-                format="%.2f",
+                min_value=0,
+                step=1,
+                format="%d",
                 key="karthik_ratio",
             )
 
@@ -928,6 +1028,11 @@ if record_type == "Expense":
                     st.rerun()
 
 else:
+    
+    if record_type == "Money Transfer":
+        if not st.session_state.money_transfer_description:
+            st.session_state.money_transfer_description = "money transfer"
+
     with st.form("money_transfer_form"):
         transfer_date = st.date_input(
             "Date",
@@ -941,7 +1046,7 @@ else:
         )
 
         transfer_amount = st.number_input(
-            "Amount (₹)",
+            "Amount in rupees (₹)",
             min_value=0.0,
             step=1.0,
             format="%.2f",
@@ -1039,17 +1144,11 @@ history_filter = st.selectbox(
     key="history_filter",
 )
 
-if history_filter in ["All", "Expenses"]:
-    if history_filter == "All":
-        st.markdown("#### Expenses")
+if history_filter == "All":
+    render_combined_history(expenses, money_transfers)
 
+elif history_filter == "Expenses":
     render_expense_history(expenses)
 
-if history_filter == "All":
-    st.divider()
-
-if history_filter in ["All", "Money Transfers"]:
-    if history_filter == "All":
-        st.markdown("#### Money Transfers")
-
+else:
     render_money_transfer_history(money_transfers)
