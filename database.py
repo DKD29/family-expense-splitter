@@ -504,7 +504,7 @@ def add_money_transfer(
     transfer_data = {
         "date": date.isoformat(),
         "description": description,
-        "amount": amount,
+        "amount": str(amount),
         "from_user": from_user,
         "to_user": to_user,
     }
@@ -536,7 +536,7 @@ def add_money_transfer(
 
     except Exception as exc:
         raise DatabaseError(
-            "Could not add money transfer."
+            f"Could not add money transfer: {exc}"
         ) from exc
 
 
@@ -575,7 +575,7 @@ def update_money_transfer(
     transfer_data = {
         "date": date.isoformat(),
         "description": description,
-        "amount": amount,
+        "amount": str(amount),
         "from_user": from_user,
         "to_user": to_user,
     }
